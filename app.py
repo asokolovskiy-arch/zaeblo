@@ -120,8 +120,8 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 ```
 # ---------- JobQueue ----------
-job_queue = app.job_queue
-job_queue.run_daily(send_reminder, time=datetime.time(hour=21, minute=0, second=0))
+if app.job_queue is not None:
+    app.job_queue.run_daily(send_reminder, time=datetime.time(hour=21, minute=0, second=0))
 
 app.run_polling()
 ```
