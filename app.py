@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN = 8467867383:AAGrCYHbRJqxZwPm2rS8YCjb5Wf_ulLVG_o
+TOKEN = "8467867383:AAGrCYHbRJqxZwPm2rS8YCjb5Wf_ulLVG_o"
 
 # Данные касс
 CASH_DATA = {
