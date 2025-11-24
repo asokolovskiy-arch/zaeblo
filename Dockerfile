@@ -7,5 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Telegram-боту НЕ нужен порт
 CMD ["python", "app.py"]
