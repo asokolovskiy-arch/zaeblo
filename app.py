@@ -74,24 +74,29 @@ async def shop_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # удаляем inline кнопки
     await query.message.delete()
 
-# ----- Cash Input -----
-async def handle_cash(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    shop = context.user_data.get("shop")
-    if not shop:
+# ----- Universal Text Handler -----
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get("state", "start")
+    if state == "after_shop":
+        # Пользователь ввел кассу
+        shop = context.user_data.get("shop")
+        if shop:
+            cash = update.message.text
+            user_id = update.message.from_user.id
+            CASH_DATA[shop] = {
+                "user_id": user_id,
+                "cash": cash,
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+            await update.message.reply_text(f"Касса для {shop} обновлена: {cash}")
+            context.user_data.pop("shop", None)
+            context.user_data["state"] = "start"
+            keyboard = get_reply_keyboard("start", user_id)
+            await update.message.reply_text("Нажмите кнопку меню ниже:", reply_markup=keyboard)
         return
-    cash = update.message.text
-    user_id = update.message.from_user.id
-    CASH_DATA[shop] = {
-        "user_id": user_id,
-        "cash": cash,
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    }
-    await update.message.reply_text(f"Касса для {shop} обновлена: {cash}")
-    # Возврат в стартовое меню
-    context.user_data["state"] = "start"
-    keyboard = get_reply_keyboard("start", user_id)
-    await update.message.reply_text("Нажмите кнопку меню ниже:", reply_markup=keyboard)
-    context.user_data.pop("shop", None)
+    else:
+        # Все остальное обрабатываем как выбор меню
+        await show_menu(update, context)
 
 # ----- Reminders -----
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
@@ -116,8 +121,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(shop_button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, show_menu))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cash))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     schedule_jobs(app)
     app.run_polling()
