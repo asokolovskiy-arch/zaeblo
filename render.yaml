@@ -1,0 +1,6 @@
+services:
+  - type: worker
+    name: telegram-cash-bot
+    plan: free
+    buildCommand: docker build -t bot .
+    startCommand: docker run bot
