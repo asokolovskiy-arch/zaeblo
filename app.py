@@ -1,131 +1,170 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler,
-    MessageHandler, filters, JobQueue
-)
+import os
 import datetime
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+from dotenv import load_dotenv
 
-TOKEN = "8467867383:AAGrCYHbRJqxZwPm2rS8YCjb5Wf_ulLVG_o"
+load_dotenv()
 
-SHOPS = ["Ц. Рынок", "ТЦ Апельсин", "Базар"]
-CASH_DATA = {}
-ADMIN_ID = 7085347092
-EMPLOYEES = []
-NOTIFY_HOURS = [11, 13, 15, 18]
+TOKEN = os.getenv("BOT_TOKEN")
 
-# ----- Reply Keyboards -----
-def get_reply_keyboard(state, user_id):
+# Данные касс
+CASH_DATA = {
+    "Точка 1": {},
+    "Точка 2": {},
+    "Точка 3": {},
+}
+
+# ID админа (замени на свой)
+ADMIN_ID = 6702575755
+
+
+# ---------- Reply Клавиатура ----------
+def get_reply_keyboard(state: str, user_id=None):
     if state == "start":
-        return ReplyKeyboardMarkup([["Показать меню"]], resize_keyboard=True)
-    elif state == "main":
-        buttons = [["Выбрать точку"]]
-        if user_id == ADMIN_ID:
-            buttons[0].append("Показать все кассы")
-        buttons.append(["Назад"])
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton("Показать меню")]],
+            resize_keyboard=True,
+        )
+
+    if state == "menu":
+        buttons = [["Выбрать точку"], ["Показать все кассы"], ["Назад"]]
         return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-    elif state == "after_shop":
-        return ReplyKeyboardMarkup([["Назад"]], resize_keyboard=True)
-    return None
 
-# ----- Start -----
+    if state == "select_shop":
+        shops = list(CASH_DATA.keys())
+        keyboard = [[shop] for shop in shops] + [["Назад"]]
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("Показать меню")]],
+        resize_keyboard=True
+    )
+
+
+# ---------- Команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id not in EMPLOYEES and user_id != ADMIN_ID:
-        EMPLOYEES.append(user_id)
     context.user_data["state"] = "start"
-    keyboard = get_reply_keyboard("start", user_id)
-    await update.message.reply_text("Добро пожаловать! Нажмите кнопку меню ниже:", reply_markup=keyboard)
+    keyboard = get_reply_keyboard("start")
+    await update.message.reply_text("Нажмите кнопку ниже:", reply_markup=keyboard)
 
-# ----- Show Menu -----
-async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    text = update.message.text
-    state = context.user_data.get("state", "start")
 
-    # Обработка кнопок Reply Keyboard
-    if text == "Показать меню":
-        context.user_data["state"] = "main"
-        keyboard = get_reply_keyboard("main", user_id)
-        await update.message.reply_text("Главное меню:", reply_markup=keyboard)
-    elif text == "Назад":
-        # Возврат в стартовое меню
-        context.user_data["state"] = "start"
-        keyboard = get_reply_keyboard("start", user_id)
-        await update.message.reply_text("Возврат в главное меню:", reply_markup=keyboard)
-    elif text == "Выбрать точку":
-        keyboard = [[InlineKeyboardButton(shop, callback_data=shop)] for shop in SHOPS]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Выберите точку:", reply_markup=reply_markup)
-        context.user_data["state"] = "after_shop"
-    elif text == "Показать все кассы" and user_id == ADMIN_ID:
-        msg = "Текущие кассы:\n"
-        for shop, info in CASH_DATA.items():
-            msg += f"{shop}: {info['cash']} (обновлено {info['timestamp']})\n"
-        await update.message.reply_text(msg)
+# ---------- Показ всех касс ----------
+async def show_all_cash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "📊 Все кассы:\n\n"
+    for shop, data in CASH_DATA.items():
+        if "cash" in data:
+            text += f"🏪 {shop}: {data['cash']} руб. (в {data['timestamp']})\n"
+        else:
+            text += f"🏪 {shop}: нет данных\n"
 
-# ----- Shop Selection -----
-async def shop_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    shop = query.data
-    context.user_data["shop"] = shop
-    context.user_data["state"] = "after_shop"
-    await query.message.reply_text(f"Введите актуальную кассу для {shop}:")
-    # удаляем inline кнопки
-    await query.message.delete()
+    await update.message.reply_text(text)
 
-# ----- Universal Text Handler -----
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = context.user_data.get("state", "start")
-    if state == "after_shop":
-        # Пользователь ввел кассу
-        shop = context.user_data.get("shop")
-        if shop:
-            cash = update.message.text
-            user_id = update.message.from_user.id
-            CASH_DATA[shop] = {
-                "user_id": user_id,
-                "cash": cash,
-                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            }
-            await update.message.reply_text(f"Касса для {shop} обновлена: {cash}")
-            context.user_data.pop("shop", None)
-            context.user_data["state"] = "start"
-            keyboard = get_reply_keyboard("start", user_id)
-            await update.message.reply_text("Нажмите кнопку меню ниже:", reply_markup=keyboard)
-        return
-    else:
-        # Все остальное обрабатываем как выбор меню
-        await show_menu(update, context)
 
-# ----- Reminders -----
+# ---------- Напоминание ----------
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.datetime.now()
-    for user_id in EMPLOYEES:
-        msg = f"Напоминаем обновить кассу на сегодня ({now.strftime('%H:%M')})!"
-        keyboard = [[InlineKeyboardButton(shop, callback_data=shop)] for shop in SHOPS]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=reply_markup)
-        except Exception as e:
-            print(f"Ошибка при отправке напоминания {user_id}: {e}")
+    now = datetime.datetime.now().strftime("%H:%M")
+    await context.bot.send_message(ADMIN_ID, f"⏰ Напоминание обновить кассы ({now})")
+
 
 def schedule_jobs(app):
-    job_queue: JobQueue = app.job_queue
-    for hour in NOTIFY_HOURS:
-        job_queue.run_daily(send_reminder, time=datetime.time(hour=hour, minute=0, second=0))
+    hours = [21]  # каждый день в 21:00
+    for hour in hours:
+        app.job_queue.run_daily(
+            send_reminder,
+            time=datetime.time(hour=hour, minute=0, second=0)
+        )
 
-# ----- Main -----
+
+# ---------- Основной обработчик текстов ----------
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.message.from_user.id
+
+    state = context.user_data.get("state", "start")
+
+    # === Кнопка Показать меню ===
+    if text == "Показать меню":
+        context.user_data["state"] = "menu"
+        keyboard = get_reply_keyboard("menu", user_id)
+        await update.message.reply_text("Меню:", reply_markup=keyboard)
+        return
+
+    # === Назад ===
+    if text == "Назад":
+        context.user_data["state"] = "menu"
+        keyboard = get_reply_keyboard("menu", user_id)
+        await update.message.reply_text("Меню:", reply_markup=keyboard)
+        return
+
+    # === Выбрать точку ===
+    if text == "Выбрать точку":
+        context.user_data["state"] = "select_shop"
+        keyboard = get_reply_keyboard("select_shop", user_id)
+        await update.message.reply_text("Выберите точку:", reply_markup=keyboard)
+        return
+
+    # === Показать все кассы ===
+    if text == "Показать все кассы":
+        await show_all_cash(update, context)
+        return
+
+    # === Пользователь выбирает точку ===
+    if state == "select_shop" and text in CASH_DATA:
+        context.user_data["shop"] = text
+        context.user_data["state"] = "after_shop"
+        await update.message.reply_text(f"Введите сумму кассы для {text}:")
+        return
+
+    # === Пользователь вводит кассу (должно быть число) ===
+    if state == "after_shop":
+        shop = context.user_data.get("shop")
+        if shop:
+
+            # Проверка на число
+            if not text.isdigit():
+                await update.message.reply_text("❗ Введите число")
+                return
+
+            # Сохраняем
+            CASH_DATA[shop] = {
+                "user_id": user_id,
+                "cash": text,
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+
+            await update.message.reply_text(f"Касса для {shop} обновлена: {text} руб.")
+
+            # Возврат в меню
+            context.user_data["state"] = "menu"
+            keyboard = get_reply_keyboard("menu", user_id)
+            await update.message.reply_text("Меню:", reply_markup=keyboard)
+            return
+
+    await update.message.reply_text("Не понял команду. Нажмите кнопку ниже.")
+
+
+# ---------- MAIN ----------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(shop_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     schedule_jobs(app)
+
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
-
