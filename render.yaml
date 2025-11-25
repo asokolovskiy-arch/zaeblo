@@ -1,6 +1,9 @@
 services:
-  - type: worker
+  - type: web
     name: telegram-cash-bot
     plan: free
-    buildCommand: docker build -t bot .
-    startCommand: docker run bot
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        value: 8467867383:AAGrCYHbRJqxZwPm2rS8YCjb5Wf_ulLVG_o
+    port: 5000
