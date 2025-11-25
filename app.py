@@ -4,6 +4,8 @@ import json
 from collections import defaultdict
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from flask import Flask
+import threading
 
 # ---------- Токен бота ----------
 TOKEN = os.environ.get("BOT_TOKEN", "8467867383:AAGrCYHbRJqxZwPm2rS8YCjb5Wf_ulLVG_o")
@@ -22,9 +24,7 @@ CASH_DATA = {
 # ---------- Список админов ----------
 ADMINS = {
     6702575755,  # Основной админ
-    # Добавьте сюда ID других админов:
-    # 1234567890,
-    # 9876543210,
+    7085347092,  # Второй админ
 }
 
 # Хранилище пользователей
@@ -34,17 +34,30 @@ def is_admin(user_id: int) -> bool:
     """Проверяет, является ли пользователь админом"""
     return user_id in ADMINS
 
-# ---------- Reply Клавиатура ----------
+# ---------- Flask app для Render ----------
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "✅ Telegram Bot is running on Render!"
+
+@app.route('/health')
+def health():
+    return "OK"
+
+@app.route('/ping')
+def ping():
+    return "pong"
+
+# ---------- Остальной код без изменений ----------
 def get_reply_keyboard(state: str, user_id: int = None):
     if state == "start":
         return ReplyKeyboardMarkup([[KeyboardButton("Показать меню")]], resize_keyboard=True)
     
     if state == "menu":
         if user_id and is_admin(user_id):
-            # Меню для админа
             buttons = [["Выбрать точку", "Статистика"]]
         else:
-            # Меню для обычных пользователей - только выбор точки
             buttons = [["Выбрать точку"]]
         
         buttons.append(["Назад"])
@@ -57,16 +70,12 @@ def get_reply_keyboard(state: str, user_id: int = None):
     
     return ReplyKeyboardMarkup([[KeyboardButton("Показать меню")]], resize_keyboard=True)
 
-# ---------- Логирование активности ----------
 def log_user_activity(user_id: int, action: str):
-    """Логируем действия пользователя"""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     USER_ACTIVITY[user_id].append(f"{timestamp} - {action}")
-    # Храним только последние 10 действий на пользователя
     if len(USER_ACTIVITY[user_id]) > 10:
         USER_ACTIVITY[user_id] = USER_ACTIVITY[user_id][-10:]
 
-# ---------- Основные хэндлеры ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     log_user_activity(user_id, "start")
@@ -78,18 +87,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("👑 Добро пожаловать, Админ!\nНажмите кнопку ниже:", reply_markup=keyboard)
     else:
         await update.message.reply_text("Нажмите кнопку ниже:", reply_markup=keyboard)
-
-async def show_all_cash(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    log_user_activity(user_id, "show_all_cash")
-    
-    text = "📊 Все кассы:\n\n"
-    for shop, data in CASH_DATA.items():
-        if data and "cash" in data:
-            text += f"🏪 {shop}: {data['cash']} руб. (в {data['timestamp']})\n"
-        else:
-            text += f"🏪 {shop}: нет данных\n"
-    await update.message.reply_text(text)
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -117,7 +114,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "Статистика":
-        # Только админ имеет доступ к статистике
         if is_admin(user_id):
             await admin_stats(update, context)
         else:
@@ -154,12 +150,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Админские функции ----------
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статистика для админа"""
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
         return
     
-    # Статистика по кассам
     total_cash = 0
     updated_count = 0
     empty_count = 0
@@ -174,12 +168,10 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             empty_count += 1
     
-    # Расчет средней выручки
     average_cash = 0
     if cash_values:
         average_cash = sum(cash_values) / len(cash_values)
     
-    # Статистика по пользователям
     active_users = len(USER_ACTIVITY)
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     today_actions = sum(1 for actions in USER_ACTIVITY.values() for action in actions if action.startswith(today))
@@ -200,7 +192,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏰ **Последние обновления:**
 """
     
-    # Добавляем последние 5 обновлений
     recent_updates = []
     for shop, data in CASH_DATA.items():
         if data and "timestamp" in data:
@@ -211,7 +202,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for shop, timestamp, cash in recent_updates[:5]:
         text += f"• {shop}: {cash} руб. ({timestamp})\n"
     
-    # Добавляем топ-3 точки по выручке
     if cash_values:
         text += f"\n🏆 **Топ-3 по выручке:**\n"
         top_shops = [(shop, int(data["cash"])) for shop, data in CASH_DATA.items() if data and "cash" in data]
@@ -223,7 +213,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список пользователей для админа"""
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
         return
@@ -245,33 +234,27 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Экспорт данных для админа"""
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
         return
     
-    # Создаем данные для экспорта
     export_data = {
         "cash_data": CASH_DATA,
         "timestamp": datetime.datetime.now().isoformat(),
         "total_shops": len(CASH_DATA)
     }
     
-    # Форматируем для читаемости
     formatted_data = json.dumps(export_data, ensure_ascii=False, indent=2)
     
-    # Отправляем как файл или текст (если небольшой)
-    if len(formatted_data) < 4000:  # Лимит Telegram для сообщения
+    if len(formatted_data) < 4000:
         await update.message.reply_text(f"```json\n{formatted_data}\n```", parse_mode='MarkdownV2')
     else:
-        # Если данных много - отправляем как файл
         await update.message.reply_document(
             document=json.dumps(export_data).encode(),
             filename=f"cash_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.json"
         )
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Рассылка сообщений всем пользователям"""
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
         return
@@ -292,9 +275,7 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Сообщение отправлено {broadcast_count} пользователям")
 
-# ---------- Управление админами ----------
 async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать список админов"""
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
         return
@@ -311,7 +292,6 @@ async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='MarkdownV2')
 
 async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Добавить нового админа"""
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
         return
@@ -330,7 +310,6 @@ async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ADMINS.add(new_admin_id)
         await update.message.reply_text(f"✅ Пользователь `{new_admin_id}` добавлен в админы", parse_mode='MarkdownV2')
         
-        # Уведомляем нового админа
         try:
             await context.bot.send_message(new_admin_id, "🎉 Вас добавили в админы бота!")
         except:
@@ -340,7 +319,6 @@ async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ User ID должен быть числом")
 
 async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить админа"""
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
         return
@@ -356,7 +334,6 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Этот пользователь не является админом")
             return
         
-        # Не позволяем удалить последнего админа
         if len(ADMINS) <= 1:
             await update.message.reply_text("❌ Нельзя удалить последнего админа")
             return
@@ -367,9 +344,7 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ User ID должен быть числом")
 
-# ---------- Напоминание ----------
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Напоминание обновить кассы"""
     now = datetime.datetime.now().strftime("%H:%M")
     for admin_id in ADMINS:
         try:
@@ -377,34 +352,44 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Ошибка отправки напоминания админу {admin_id}: {e}")
 
-# ---------- MAIN ----------
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Основные команды
-    app.add_handler(CommandHandler("start", start))
-    
-    # Админские команды
-    app.add_handler(CommandHandler("stats", admin_stats))
-    app.add_handler(CommandHandler("users", admin_users))
-    app.add_handler(CommandHandler("export", admin_export))
-    app.add_handler(CommandHandler("broadcast", admin_broadcast))
-    
-    # Команды управления админами
-    app.add_handler(CommandHandler("admins", admin_list))
-    app.add_handler(CommandHandler("addadmin", admin_add))
-    app.add_handler(CommandHandler("removeadmin", admin_remove))
-    
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+# ---------- Запуск Flask и бота ----------
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Starting Flask server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
 
-    # JobQueue для напоминаний
-    if app.job_queue:
-        app.job_queue.run_daily(
+def run_bot():
+    print("🤖 Starting Telegram Bot...")
+    application = ApplicationBuilder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", admin_stats))
+    application.add_handler(CommandHandler("users", admin_users))
+    application.add_handler(CommandHandler("export", admin_export))
+    application.add_handler(CommandHandler("broadcast", admin_broadcast))
+    application.add_handler(CommandHandler("admins", admin_list))
+    application.add_handler(CommandHandler("addadmin", admin_add))
+    application.add_handler(CommandHandler("removeadmin", admin_remove))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
+    if application.job_queue:
+        application.job_queue.run_daily(
             send_reminder, 
             time=datetime.time(hour=21, minute=0, second=0)
         )
 
-    app.run_polling()
+    print("✅ Bot is running with polling...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main()
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    # Даем Flask время на запуск
+    import time
+    time.sleep(2)
+    
+    # Запускаем бота
+    run_bot()
