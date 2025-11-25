@@ -6,9 +6,14 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from flask import Flask
 import threading
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # ---------- Токен бота ----------
 TOKEN = os.environ.get("BOT_TOKEN", "8467867383:AAGrCYHbRJqxZwPm2rS8YCjb5Wf_ulLVG_o")
+
+# ---------- PostgreSQL ----------
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 # ---------- Данные касс ----------
 CASH_DATA = {
@@ -34,12 +39,87 @@ def is_admin(user_id: int) -> bool:
     """Проверяет, является ли пользователь админом"""
     return user_id in ADMINS
 
+# ---------- PostgreSQL функции ----------
+def init_db():
+    """Инициализация таблицы в базе данных"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS cash_data (
+                shop_name TEXT PRIMARY KEY,
+                user_id BIGINT,
+                cash INTEGER,
+                timestamp TEXT
+            )
+        ''')
+        conn.commit()
+        print("✅ База данных инициализирована")
+    except Exception as e:
+        print(f"❌ Ошибка инициализации БД: {e}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def save_cash_data():
+    """Сохраняет все данные касс в PostgreSQL"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        for shop, data in CASH_DATA.items():
+            if data:  # Если есть данные
+                cur.execute('''
+                    INSERT INTO cash_data (shop_name, user_id, cash, timestamp)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (shop_name) 
+                    DO UPDATE SET user_id = %s, cash = %s, timestamp = %s
+                ''', (shop, data.get('user_id'), data.get('cash'), data.get('timestamp'),
+                      data.get('user_id'), data.get('cash'), data.get('timestamp')))
+            else:  # Если данных нет, удаляем запись
+                cur.execute('DELETE FROM cash_data WHERE shop_name = %s', (shop,))
+        
+        conn.commit()
+        print("✅ Данные сохранены в PostgreSQL")
+    except Exception as e:
+        print(f"❌ Ошибка сохранения в БД: {e}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def load_cash_data():
+    """Загружает данные касс из PostgreSQL"""
+    global CASH_DATA
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute('SELECT * FROM cash_data')
+        
+        for row in cur.fetchall():
+            shop = row['shop_name']
+            if shop in CASH_DATA:
+                CASH_DATA[shop] = {
+                    'user_id': row['user_id'],
+                    'cash': str(row['cash']),  # Сохраняем как строку для совместимости
+                    'timestamp': row['timestamp']
+                }
+        
+        print("✅ Данные загружены из PostgreSQL")
+    except Exception as e:
+        print(f"❌ Ошибка загрузки из БД: {e}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
 # ---------- Flask app для Render ----------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ Telegram Bot is running on Render!"
+    return "✅ Telegram Bot is running on Render with PostgreSQL!"
 
 @app.route('/health')
 def health():
@@ -49,14 +129,17 @@ def health():
 def ping():
     return "pong"
 
-# ---------- Остальной код без изменений ----------
+# ---------- Остальной код (без изменений) ----------
 def get_reply_keyboard(state: str, user_id: int = None):
     if state == "start":
         return ReplyKeyboardMarkup([[KeyboardButton("Показать меню")]], resize_keyboard=True)
     
     if state == "menu":
         if user_id and is_admin(user_id):
-            buttons = [["Выбрать точку", "Статистика"]]
+            buttons = [
+                ["Выбрать точку"],
+                ["Статистика", "Управление"]
+            ]
         else:
             buttons = [["Выбрать точку"]]
         
@@ -67,6 +150,15 @@ def get_reply_keyboard(state: str, user_id: int = None):
         shops = list(CASH_DATA.keys())
         keyboard = [[shop] for shop in shops] + [["Назад"]]
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    if state == "admin_management":
+        buttons = [
+            ["Сбросить всё"],
+            ["Экспорт данных", "Список пользователей"],
+            ["Рассылка", "Список админов"],
+            ["Назад"]
+        ]
+        return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
     
     return ReplyKeyboardMarkup([[KeyboardButton("Показать меню")]], resize_keyboard=True)
 
@@ -120,6 +212,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Доступ запрещен")
         return
 
+    if text == "Управление":
+        if is_admin(user_id):
+            context.user_data["state"] = "admin_management"
+            keyboard = get_reply_keyboard("admin_management", user_id)
+            await update.message.reply_text("👑 Панель управления:", reply_markup=keyboard)
+        else:
+            await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    if state == "admin_management":
+        if text == "Сбросить всё":
+            await admin_reset_all(update, context)
+            return
+        elif text == "Экспорт данных":
+            await admin_export(update, context)
+            return
+        elif text == "Список пользователей":
+            await admin_users(update, context)
+            return
+        elif text == "Рассылка":
+            await update.message.reply_text("Введите команду: /broadcast <сообщение>")
+            return
+        elif text == "Список админов":
+            await admin_list(update, context)
+            return
+
     if state == "select_shop" and text in CASH_DATA:
         context.user_data["shop"] = text
         context.user_data["state"] = "after_shop"
@@ -138,8 +256,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "cash": text,
                 "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             }
-            log_user_activity(user_id, f"updated_cash: {shop} = {text} руб.")
             
+            # СОХРАНЯЕМ В БАЗУ ДАННЫХ
+            save_cash_data()
+            
+            log_user_activity(user_id, f"updated_cash: {shop} = {text} руб.")
             await update.message.reply_text(f"Касса для {shop} обновлена: {text} руб.")
             context.user_data["state"] = "menu"
             keyboard = get_reply_keyboard("menu", user_id)
@@ -344,6 +465,20 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ User ID должен быть числом")
 
+async def admin_reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбросить все данные касс"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    for shop in CASH_DATA:
+        CASH_DATA[shop] = {}
+    
+    # СОХРАНЯЕМ ПУСТЫЕ ДАННЫЕ В БАЗУ
+    save_cash_data()
+    
+    await update.message.reply_text("✅ Все данные касс сброшены!")
+
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.datetime.now().strftime("%H:%M")
     for admin_id in ADMINS:
@@ -360,6 +495,12 @@ def run_flask():
 
 def run_bot():
     print("🤖 Starting Telegram Bot...")
+    
+    # Инициализируем базу данных
+    init_db()
+    # Загружаем данные при старте
+    load_cash_data()
+    
     application = ApplicationBuilder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
