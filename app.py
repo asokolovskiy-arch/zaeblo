@@ -1,8 +1,6 @@
 import os
 import datetime
 import json
-import hashlib
-import secrets
 from collections import defaultdict
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -37,8 +35,7 @@ ADMINS = {
 
 # Хранилище пользователей и сессий
 USER_ACTIVITY = defaultdict(list)
-USER_SESSIONS = {}  # user_id -> session_data
-AUTHORIZED_USERS = set()  # user_id авторизованных пользователей
+AUTHORIZED_USERS = set()
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMINS
@@ -53,7 +50,6 @@ def init_db():
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Таблица касс
         cur.execute('''
             CREATE TABLE IF NOT EXISTS cash_data (
                 shop_name TEXT PRIMARY KEY,
@@ -63,7 +59,6 @@ def init_db():
             )
         ''')
         
-        # Таблица авторизованных пользователей
         cur.execute('''
             CREATE TABLE IF NOT EXISTS authorized_users (
                 user_id BIGINT PRIMARY KEY,
@@ -75,8 +70,6 @@ def init_db():
         
         conn.commit()
         print("✅ База данных инициализирована")
-        
-        # Загружаем авторизованных пользователей
         load_authorized_users()
         
     except Exception as e:
@@ -264,8 +257,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "auth_required"
         keyboard = get_reply_keyboard("auth_required", user_id)
         await update.message.reply_text(
-            "🔐 Для работы с ботом требуется авторизация.\n\n"
-            "Нажмите кнопку ниже для авторизации:",
+            "🔐 Для работы с ботом требуется авторизация.\n\nНажмите кнопку ниже для авторизации:",
             reply_markup=keyboard
         )
         return
@@ -285,7 +277,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     log_user_activity(user_id, f"text: {text}")
 
-    # Проверка авторизации для всех действий кроме авторизации
     if text not in ["Авторизоваться", "Показать меню", "Назад"] and not is_authorized(user_id) and not is_admin(user_id):
         await update.message.reply_text("❌ Доступ запрещен. Требуется авторизация.")
         return
@@ -305,8 +296,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 "🔐 Для авторизации обратитесь к администратору.\n\n"
-                "Администратор может добавить вас в систему с помощью команды:\n"
-                "/adduser <ваш_user_id>\n\n"
                 f"Ваш User ID: `{user_id}`",
                 parse_mode='MarkdownV2'
             )
@@ -340,7 +329,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Доступ запрещен")
         return
 
-    # Обработка меню управления
     if state == "admin_management":
         if text == "Сбросить всё":
             await admin_reset_all(update, context)
@@ -363,21 +351,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await admin_list(update, context)
             return
 
-    # Обработка управления пользователями
     if state == "user_management":
         if text == "Добавить пользователя":
-            await update.message.reply_text(
-                "Для добавления пользователя используйте команду:\n"
-                "/adduser <user_id>\n\n"
-                "Или попросите пользователя нажать кнопку 'Авторизоваться' "
-                "и пришлите его User ID"
-            )
+            await update.message.reply_text("Используйте команду: /adduser <user_id>")
             return
         elif text == "Удалить пользователя":
-            await update.message.reply_text(
-                "Для удаления пользователя используйте команду:\n"
-                "/removeuser <user_id>"
-            )
+            await update.message.reply_text("Используйте команду: /removeuser <user_id>")
             return
         elif text == "Список пользователей":
             await admin_authorized_users(update, context)
@@ -430,20 +409,8 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_name = update.message.from_user.full_name or ""
         
         add_authorized_user(new_user_id, username, full_name)
+        await update.message.reply_text(f"✅ Пользователь `{new_user_id}` добавлен", parse_mode='MarkdownV2')
         
-        await update.message.reply_text(f"✅ Пользователь `{new_user_id}` добавлен в систему", parse_mode='MarkdownV2')
-        
-        # Уведомляем пользователя
-        try:
-            await context.bot.send_message(
-                new_user_id,
-                "🎉 Вас добавили в систему бота!\n\n"
-                "Теперь вы можете использовать все функции бота. "
-                "Нажмите /start для начала работы."
-            )
-        except:
-            await update.message.reply_text("⚠️ Не удалось отправить уведомление пользователю")
-            
     except ValueError:
         await update.message.reply_text("❌ User ID должен быть числом")
 
@@ -465,7 +432,7 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         remove_authorized_user(user_id_to_remove)
-        await update.message.reply_text(f"✅ Пользователь `{user_id_to_remove}` удален из системы", parse_mode='MarkdownV2')
+        await update.message.reply_text(f"✅ Пользователь `{user_id_to_remove}` удален", parse_mode='MarkdownV2')
         
     except ValueError:
         await update.message.reply_text("❌ User ID должен быть числом")
@@ -483,11 +450,7 @@ async def admin_authorized_users(update: Update, context: ContextTypes.DEFAULT_T
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        cur.execute('''
-            SELECT user_id, username, full_name, authorized_at 
-            FROM authorized_users 
-            ORDER BY authorized_at DESC
-        ''')
+        cur.execute('SELECT user_id, username, full_name, authorized_at FROM authorized_users ORDER BY authorized_at DESC')
         
         text = "👥 **АВТОРИЗОВАННЫЕ ПОЛЬЗОВАТЕЛИ:**\n\n"
         
@@ -509,7 +472,7 @@ async def admin_authorized_users(update: Update, context: ContextTypes.DEFAULT_T
             cur.close()
             conn.close()
 
-# ---------- Существующие админские функции (без изменений) ----------
+# ---------- Админские функции ----------
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("❌ Доступ запрещен")
@@ -574,7 +537,150 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
-# ... остальные админские функции (admin_users, admin_export, admin_broadcast, admin_list, admin_add, admin_remove, admin_reset_all) остаются без изменений ...
+async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список всех пользователей с активностью"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    if not USER_ACTIVITY:
+        await update.message.reply_text("📝 Пользователей пока нет")
+        return
+    
+    text = "👥 **СПИСОК ВСЕХ ПОЛЬЗОВАТЕЛЕЙ:**\n\n"
+    
+    for user_id, actions in USER_ACTIVITY.items():
+        last_action = actions[-1] if actions else "нет действий"
+        user_status = "👑 АДМИН" if is_admin(user_id) else ("✅ АВТОРИЗОВАН" if is_authorized(user_id) else "❌ НЕАВТОРИЗОВАН")
+        text += f"🆔 {user_id} ({user_status})\n"
+        text += f"📊 Действий: {len(actions)}\n"
+        text += f"⏰ Последнее: {last_action}\n"
+        text += "─" * 20 + "\n"
+    
+    await update.message.reply_text(text)
+
+async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Экспорт данных для админа"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    export_data = {
+        "cash_data": CASH_DATA,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "total_shops": len(CASH_DATA)
+    }
+    
+    formatted_data = json.dumps(export_data, ensure_ascii=False, indent=2)
+    
+    if len(formatted_data) < 4000:
+        await update.message.reply_text(f"```json\n{formatted_data}\n```", parse_mode='MarkdownV2')
+    else:
+        await update.message.reply_document(
+            document=json.dumps(export_data).encode(),
+            filename=f"cash_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.json"
+        )
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Рассылка сообщений всем пользователям"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /broadcast <сообщение>")
+        return
+    
+    message = " ".join(context.args)
+    broadcast_count = 0
+    
+    for user_id in USER_ACTIVITY.keys():
+        try:
+            await context.bot.send_message(user_id, f"📢 **РАССЫЛКА:**\n\n{message}")
+            broadcast_count += 1
+        except Exception as e:
+            print(f"Не удалось отправить пользователю {user_id}: {e}")
+    
+    await update.message.reply_text(f"✅ Сообщение отправлено {broadcast_count} пользователям")
+
+async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список админов"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    if not ADMINS:
+        await update.message.reply_text("📝 Список админов пуст")
+        return
+    
+    text = "👑 **СПИСОК АДМИНОВ:**\n\n"
+    for i, admin_id in enumerate(sorted(ADMINS), 1):
+        text += f"{i}. `{admin_id}`\n"
+    
+    text += f"\nВсего админов: {len(ADMINS)}"
+    await update.message.reply_text(text, parse_mode='MarkdownV2')
+
+async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить нового админа"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /addadmin <user_id>")
+        return
+    
+    try:
+        new_admin_id = int(context.args[0])
+        
+        if new_admin_id in ADMINS:
+            await update.message.reply_text("⚠️ Этот пользователь уже является админом")
+            return
+        
+        ADMINS.add(new_admin_id)
+        await update.message.reply_text(f"✅ Пользователь `{new_admin_id}` добавлен в админы", parse_mode='MarkdownV2')
+        
+    except ValueError:
+        await update.message.reply_text("❌ User ID должен быть числом")
+
+async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удалить админа"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /removeadmin <user_id>")
+        return
+    
+    try:
+        admin_id_to_remove = int(context.args[0])
+        
+        if admin_id_to_remove not in ADMINS:
+            await update.message.reply_text("❌ Этот пользователь не является админом")
+            return
+        
+        if len(ADMINS) <= 1:
+            await update.message.reply_text("❌ Нельзя удалить последнего админа")
+            return
+        
+        ADMINS.remove(admin_id_to_remove)
+        await update.message.reply_text(f"✅ Пользователь `{admin_id_to_remove}` удален из админов", parse_mode='MarkdownV2')
+        
+    except ValueError:
+        await update.message.reply_text("❌ User ID должен быть числом")
+
+async def admin_reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбросить все данные касс"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+    
+    for shop in CASH_DATA:
+        CASH_DATA[shop] = {}
+    
+    save_cash_data()
+    await update.message.reply_text("✅ Все данные касс сброшены!")
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.datetime.now().strftime("%H:%M")
@@ -588,14 +694,12 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     print(f"🚀 Starting Flask server on port {port}")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 def run_bot():
     print("🤖 Starting Telegram Bot...")
     
-    # Инициализируем базу данных
     init_db()
-    # Загружаем данные при старте
     load_cash_data()
     
     application = ApplicationBuilder().token(TOKEN).build()
@@ -628,14 +732,11 @@ def run_bot():
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
     
-    # Даем Flask время на запуск
     import time
     time.sleep(2)
     
-    # Запускаем бота
     run_bot()
